@@ -6,16 +6,29 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 app = FastAPI(title="Brand Promo Claims Calculator")
 
-# Core Paths
+# --- Dynamic Path Resolution to match your filename ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE_PATH = os.path.join(BASE_DIR, "templates", "index.html")
+
+# Matches the exact custom root filename uploaded in your system
+TEMPLATE_PATH = os.path.join(BASE_DIR, "templates index.html")
 
 # Global internal app cache to temporarily hold calculated datasets for export streams
 app.state.final_report = None
 
 
 def get_base_html() -> str:
-    """Reads the static index.html file safely as a plain text string."""
+    """Reads your template file cleanly as a plain text string from the workspace root."""
+    if not os.path.exists(TEMPLATE_PATH):
+        # Fallback safeguard in case you decide to rename it inside a folder later
+        alternative_path = os.path.join(BASE_DIR, "templates", "index.html")
+        if os.path.exists(alternative_path):
+            with open(alternative_path, "r", encoding="utf-8") as f:
+                return f.read()
+        raise FileNotFoundError(
+            f"Could not find template file. System searched root for 'templates index.html' "
+            f"and folder for 'templates/index.html'. Available files: {os.listdir(BASE_DIR)}"
+        )
+        
     with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -26,7 +39,10 @@ async def read_index():
     Bypasses Jinja2 entirely by rendering the raw HTML template string,
     removing any chance of the Python 3.14 dictionary cache bug.
     """
-    html_content = get_base_html()
+    try:
+        html_content = get_base_html()
+    except Exception as e:
+        return HTMLResponse(content=f"<h3>Configuration Error</h3><p>{str(e)}</p>", status_code=500)
     
     # Clean up Jinja syntax placeholder anchors for the initial load
     html_content = html_content.replace("{% if diagnostics %}{% endif %}", "")
@@ -41,8 +57,10 @@ async def calculate_claims(
     claim_sales: UploadFile = File(...),
     claim_promo: UploadFile = File(...)
 ):
-    # Fetch base raw HTML template text
-    base_html = get_base_html()
+    try:
+        base_html = get_base_html()
+    except Exception as e:
+        return HTMLResponse(content=f"<h3>Configuration Error</h3><p>{str(e)}</p>", status_code=500)
     
     try:
         # 1. Dynamically read all file streams safely (.csv or .xlsx)
@@ -132,18 +150,17 @@ async def calculate_claims(
         # 9. Compute claims total amounts
         final_summary["Total Claim Amount"] = final_summary["Total_Qty_Sold"] * final_summary["GV"]
 
-        # 10. Clean up Column Layout
-        if "Email id" not in final_summary.columns:
-            final_summary["Email id"] = "partner@brandcontact.com"
+        # 10. Clean up Column Layout: Assign Email placeholder column safely
+        final_summary["Email id"] = "partner@brandcontact.com"
             
-        email_col = final_summary.pop("Email id")
-        if "Brand" in final_summary.columns:
-            brand_idx = final_summary.columns.get_loc("Brand") + 1
-            final_summary.insert(brand_idx, "Email id", email_col)
-        else:
-            final_summary.insert(6, "Email id", email_col)
+        # Reorder Email id safely right after Brand if Brand exists
+        cols = list(final_summary.columns)
+        if "Brand" in cols:
+            brand_idx = cols.index("Brand") + 1
+            cols.insert(brand_idx, cols.pop(cols.index("Email id")))
+            final_summary = final_summary[cols]
 
-        # Cache data in global memory
+        # Cache data in global memory for downloads
         app.state.final_report = final_summary.copy()
 
         # Convert date objects cleanly for the Bootstrap table render engine
